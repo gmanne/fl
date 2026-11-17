@@ -103,7 +103,14 @@ const FOODS={tomato:{name:'Tomato',code:'T'},strawberry:{name:'Strawberry',code:
 const ROIS0={food:{x:.42,y:.5,s:.5},A:{x:.86,y:.24,s:.06},B:{x:.86,y:.41,s:.06},C:{x:.86,y:.58,s:.06},E:{x:.86,y:.75,s:.06}};
 const ROI_NAME={food:'Fruit circle',A:'Black',B:'Gray',C:'White',E:'Highlighter'};
 const MARK_ORDER=['food','A','B','C','E'];
-const TICKS={1:[1],2:[1,3],4:[1,2,3,4]};
+/* The camera looks straight down, so a fruit must be ROLLED (not spun) to show new surface.
+   Both fruits: 4 views, rolled a quarter turn (90 degrees) between views.
+   Comparison (parent's plan): 2 views half a turn apart = views 1 and 3 of the same scan. */
+const VIEW_OPTS={tomato:[1,2,4],strawberry:[1,2,4],other:[1,2,4]};
+const VIEW_IDX={tomato:{1:[0],2:[0,2],4:[0,1,2,3]},strawberry:{1:[0],2:[0,2],4:[0,1,2,3]},other:{1:[0],2:[0,2],4:[0,1,2,3]}};
+const viewsFor=f=>(S.settings.views&&S.settings.views[f])||4;
+const maxViews=f=>Math.max(...VIEW_OPTS[f]);
+function viewName(food,k,N){if(N===2)return k===1?'Side 1':'Side 3 (rolled half a turn)';return 'Side '+k}
 const clone=o=>JSON.parse(JSON.stringify(o)), sleep=ms=>new Promise(r=>setTimeout(r,ms)), clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const pad=n=>String(n).padStart(2,'0');
@@ -125,27 +132,31 @@ function demoItems(){
           mk('d3','S2','strawberry',4,[[0,0,0],[1,4,-2],[2,9,-4],[3,15,-7],[4,21,-10]]),
           mk('d4','T2','tomato',1,[[0,0,0],[1,1,-.5]])];
 }
-const WOB0={tomato:{glow:6,look:3},strawberry:{glow:8,look:4},other:{glow:8,look:4}};
-function fresh(){return {v:3,settings:{cameraId:'',presets:{},rois:clone(ROIS0),wobble:clone(WOB0),wobbleSource:{},lead:{tomato:3,strawberry:2},sides:4,baseE:null,setupDone:false,photoMode:'research',keepFull:false},items:demoItems(),tests:[]}}
-function migrate(j){ /* v1/v2 data -> v3: glow/look names, highlighter instead of copy paper, wobble instead of 3xCV */
-  if(j.v===3)return j;
-  const s=j.settings||{};s.rois=clone(ROIS0);s.wobble=clone(WOB0);s.wobbleSource={};s.sides=4;s.baseE=null;s.setupDone=false;delete s.noise;delete s.baseD;
+const ERR0={tomato:{glow:6,look:3},strawberry:{glow:8,look:4},other:{glow:8,look:4}};
+function fresh(){return {v:4,settings:{cameraId:'',presets:{},rois:clone(ROIS0),err:clone(ERR0),errSource:{},lead:{tomato:3,strawberry:2},views:{tomato:4,strawberry:4,other:4},viewsV:2,baseE:null,setupDone:false,photoMode:'research',keepFull:false},items:demoItems(),tests:[]}}
+function migrate(j){ /* v1/v2 data -> v4: new names, highlighter instead of copy paper, measuring error instead of 3xCV */
+  if(j.v===4)return j;
+  if(j.v===3){const s=j.settings||{};Object.keys(s).forEach(k=>{if(/^wo[b]/.test(k)){s[k.replace(/^wo[b][a-z]*/,'err')]=s[k];delete s[k]}});j.v=4;return j}
+  const s=j.settings||{};s.rois=clone(ROIS0);s.err=clone(ERR0);s.errSource={};s.sides=4;s.baseE=null;s.setupDone=false;delete s.noise;delete s.baseD;
   (j.items||[]).forEach(it=>it.scans.forEach(sc=>{if(sc.glow==null){sc.glow=sc.uv;sc.look=sc.color;sc.sides=[];sc.old=true}}));
-  j.tests=[];j.v=3;j.migrated=true;return j}
+  j.tests=[];j.v=4;j.migrated=true;return j}
 function load(){try{const j=JSON.parse(localStorage.getItem(KEY));if(j&&j.settings)return migrate(j)}catch(e){}return fresh()}
-let S=load();if(!S.settings.photoMode)S.settings.photoMode='research';if(S.settings.keepFull==null)S.settings.keepFull=false;if(!S.tests)S.tests=[];let lastCap=null;
+let S=load();if(!S.settings.views||S.settings.viewsV!==2){S.settings.views={tomato:4,strawberry:4,other:4};S.settings.viewsV=2;delete S.settings.sides}if(!S.settings.photoMode)S.settings.photoMode='research';if(S.settings.keepFull==null)S.settings.keepFull=false;if(!S.tests)S.tests=[];let lastCap=null;
 function save(){try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}}
 
-/* FreshScore: how many wobbles has the fruit moved since its own Day 0? */
+/* FreshIndex: is the change since Day 0 bigger than the measuring error? (change ÷ measuring error, averaged over UV glow and white-light brightness) */
 function evalItem(it){
-  const W0=S.settings.wobble[it.food]||S.settings.wobble.other,W={glow:Math.max(.5,W0.glow),look:Math.max(.5,W0.look)}, L=S.settings.lead[it.food], b=it.scans[0];let det=null;
-  it.scans.forEach((sc,i)=>{sc.dG=(sc.glow-b.glow)/b.glow*100;sc.dL=(sc.look-b.look)/b.look*100;sc.wG=Math.abs(sc.dG)/W.glow;sc.wL=Math.abs(sc.dL)/W.look;sc.fs=(sc.wG+sc.wL)/2;if(det===null&&i>0&&sc.fs>=1)det=sc.day});
+  const W0=S.settings.err[it.food]||S.settings.err.other,W={glow:Math.max(.5,W0.glow),look:Math.max(.5,W0.look)}, L=S.settings.lead[it.food], b=it.scans[0];let det=null;
+  const two=sc=>sc.sides&&sc.sides.length>=3?{g:(sc.sides[0].glow+sc.sides[2].glow)/2,l:(sc.sides[0].look+sc.sides[2].look)/2}:null;
+  const W2b=((S.settings.errBy||{})[it.food]||{})[2],W2=W2b?{glow:Math.max(.5,W2b.glow),look:Math.max(.5,W2b.look)}:W,b2=two(b);
+  it.scans.forEach((sc,i)=>{sc.dG=(sc.glow-b.glow)/b.glow*100;sc.dL=(sc.look-b.look)/b.look*100;sc.wG=Math.abs(sc.dG)/W.glow;sc.wL=Math.abs(sc.dL)/W.look;sc.fs=(sc.wG+sc.wL)/2;if(det===null&&i>0&&sc.fs>=1)det=sc.day;
+    const t=two(sc);sc.fs2=(t&&b2)?(Math.abs((t.g-b2.g)/b2.g*100)/W2.glow+Math.abs((t.l-b2.l)/b2.l*100)/W2.look)/2:null});
   const last=it.scans[it.scans.length-1];let status,label,detail,left=null;
   if(it.scans.length===1){status='day0';label='Day 0 saved';detail='Scan again tomorrow to see a change'}
-  else if(det===null){status='fresh';label='Fresh';detail='Moved less than 1 wobble since Day 0'}
+  else if(det===null){status='fresh';label='Fresh';detail='The change is still smaller than the measuring error'}
   else if(L==null){status='changed';label='Changed';detail='Real change since Day '+det+'. No days-left prediction for this food yet'}
   else{left=L-(last.day-det);if(left<=0){status='past';label='Past best';detail='Use today or compost'}else{status='soon';label='Use soon';detail='About '+left+' day'+(left>1?'s':'')+' left · changing since Day '+det}}
-  return {status,label,detail,left,det,last,W,L};
+  return {status,label,detail,left,det,last,W,W2,W2set:!!W2b,L};
 }
 
 /* ---------- camera ---------- */
@@ -268,7 +279,7 @@ function offer(title,files,note){sheet(`<h2>${esc(title)}</h2>${files.map((f,i)=
   (d,close)=>{d.querySelectorAll('[data-i]').forEach(b=>b.onclick=async()=>{const f=files[+b.dataset.i],r=await saveFile(f.blob,f.name);
     d.querySelector('#svMsg').textContent=r==='downloaded'?'Saved to Downloads as '+f.name+'.':r==='shared'?'Shared. Choose "Save to Files" to keep it.':r==='cancelled'?'Cancelled.':'Could not save here.';
     if(f.after&&(r==='downloaded'||r==='shared'))f.after()});d.querySelector('#cl').onclick=()=>{close();render()}})}
-const META_H=['file','item','food','date','day','side','photo','time','camera_mode','exposure','iso','white_balance','focus','fruit_gray','swatch_gray','glow_or_look','fruit_pixels','checks'];
+const META_H=['file','item','food','date','day','side','photo','time','camera_mode','exposure','iso','white_balance','focus','fruit_gray','swatch_gray','uv_glow_or_white_brightness','fruit_pixels','checks'];
 const metaRow=p=>{const s=(p.meta&&p.meta.settings)||{},m=p.meta||{};return[p.name,p.label,p.food,p.date,p.day,p.side||'',p.kind,m.time,m.cameraMode,s.exposure,s.iso,s.wb,s.focus,m.fruitGray!=null?m.fruitGray.toFixed(2):'',m.swatchGray!=null?m.swatchGray.toFixed(2):'',m.value!=null?m.value.toFixed(5):'',m.n||'',m.checks].map(cell).join(',')};
 async function exportZip(list,zipName,info){if(!list.length){info.textContent='No full photos to export.';return}
   info.textContent='Packing '+list.length+' photos…';const folder=zipName.replace(/\.zip$/,'')+'/',files=[];
@@ -297,8 +308,8 @@ function setDock(html,two){dock.innerHTML=html?'<div class="in'+(two?' two':'')+
 function mountCam(){const slot=app.querySelector('[data-cam]');if(slot){slot.replaceWith(box);drawOv()}}
 function on(id,fn){const e=document.getElementById(id);if(e)e.onclick=fn}
 function render(){
-  $('#back').hidden=view==='home';$('#ttl').textContent={home:'FreshLight',setup:'Setup',scan:'Scan',result:'Result',item:'History',data:'Your data',newitem:'New item',wobble:'Wobble test',how:'How it works'}[view]||'FreshLight';
-  ({home:vHome,setup:vSetup,newitem:vNew,scan:vScan,result:vResult,item:vItem,data:vData,wobble:vWobble,how:vHow})[view]();setMode();
+  $('#back').hidden=view==='home';$('#ttl').textContent={home:'FreshLight',setup:'Setup',scan:'Scan',result:'Result',item:'History',data:'Your data',newitem:'New item',putback:'Put-back test',how:'How it works'}[view]||'FreshLight';
+  ({home:vHome,setup:vSetup,newitem:vNew,scan:vScan,result:vResult,item:vItem,data:vData,putback:vPutBack,how:vHow})[view]();setMode();
 }
 function sheet(html,bind){const d=document.createElement('div');d.className='sheet';d.innerHTML='<div class="in">'+html+'</div>';document.body.appendChild(d);d.addEventListener('click',e=>{if(e.target===d)d.remove()});bind(d,()=>d.remove())}
 const chkHtml=checks=>checks.map(([t,ok])=>`<div class="chk"><span>${t}</span><span class="${ok===null?'na':ok?'pass':'fail'}">${ok===null?'—':ok?'Pass':'Check'}</span></div>`).join('');
@@ -306,27 +317,29 @@ const chkHtml=checks=>checks.map(([t,ok])=>`<div class="chk"><span>${t}</span><s
 /* ---------- home ---------- */
 function vHome(){
   const ev=S.items.map(it=>[it,evalItem(it)]),cnt=k=>ev.filter(x=>x[1].status===k).length;
-  app.innerHTML=`<h1>My produce</h1><p class="mute">Scan each fruit once a day: ${S.settings.sides} side${S.settings.sides>1?'s':''}, UV and white light.</p>
+  app.innerHTML=`<h1>My produce</h1><p class="mute">Scan each fruit once a day: lay it on its side, take a UV and a white photo, roll it a quarter turn, repeat (${viewsFor('tomato')} sides per tomato, ${viewsFor('strawberry')} per strawberry).</p>
   ${S.migrated?`<div class="note w"><b>Updated to the V5 box.</b> The copy-paper patch is gone and the highlighter is now the UV reference, so please run Setup again. Your old numbers are kept but were measured the old way.</div>`:''}
   ${S.settings.setupDone?'':`<div class="note"><b>First time?</b> Run the one-time setup so the app knows your camera, the fruit circle and the four swatches.</div>`}
   <div class="kpis"><div class="kpi"><b style="color:var(--ok)">${cnt('fresh')+cnt('day0')}</b><span class="small">Fresh</span></div><div class="kpi"><b style="color:var(--warn)">${cnt('soon')}</b><span class="small">Use soon</span></div><div class="kpi"><b style="color:var(--bad)">${cnt('past')}</b><span class="small">Past best</span></div></div>
   ${ev.length?ev.sort((a,b)=>({past:0,soon:1,changed:2,fresh:3,day0:4}[a[1].status]-{past:0,soon:1,changed:2,fresh:3,day0:4}[b[1].status])).map(([it,e])=>`<button class="item" data-id="${it.id}"><span class="av">${esc(it.label.slice(0,3))}</span><span class="grow"><b>${FOODS[it.food].name}</b>${it.demo?'<span class="demo">Example</span>':''}<br><span class="small mute">Day ${dayDiff(it.day0,ds(today()))} · last scan ${nice(e.last.date)}</span></span><span class="st ${e.status}">${e.label}</span></button>`).join(''):'<div class="card mute">No items yet. Add one to take its Day 0 scan.</div>'}
-  <div class="grid2" style="margin-top:14px"><button class="btn alt" id="hSetup">Setup</button><button class="btn alt" id="hWob">Wobble test</button><button class="btn alt" id="hHow">How it works</button><button class="btn alt" id="hData">Your data</button></div>
+  <div class="grid2" style="margin-top:14px"><button class="btn alt" id="hSetup">Setup</button><button class="btn alt" id="hPut">Put-back test</button><button class="btn alt" id="hHow">How it works</button><button class="btn alt" id="hData">Your data</button></div>
   <p class="small mute" style="margin-top:14px">Items marked Example are made-up data so you can explore. History is saved only on this phone; there is no account.</p>`;
   app.querySelectorAll('.item').forEach(b=>b.onclick=()=>go('item',{id:b.dataset.id}));
-  on('hSetup',()=>go('setup',{step:1}));on('hData',()=>go('data'));on('hWob',()=>go('wobble'));on('hHow',()=>go('how'));
+  on('hSetup',()=>go('setup',{step:1}));on('hData',()=>go('data'));on('hPut',()=>go('putback'));on('hHow',()=>go('how'));
   setDock(`<button class="btn" id="dNew">+ New item (Day 0 scan)</button>`);on('dNew',()=>S.settings.setupDone?go('newitem'):go('setup',{step:1}));
 }
 
 /* ---------- how it works (plain words for judges) ---------- */
 function vHow(){
   app.innerHTML=`<h1>How FreshLight decides</h1>
-  <div class="card"><b>1. Two numbers for every side</b><p class="small">The app finds the fruit in the white photo (it leaves out shiny spots, the green top and the edge) and takes its <b>gray value</b>: the average brightness from 0 to 255.</p>
-   <p class="small"><b>Glow</b> = fruit gray in the UV photo ÷ highlighter gray<br><b>Look</b> = fruit gray in the white photo ÷ gray swatch gray</p><p class="small mute">Dividing by a swatch makes it fair: if the light is a bit weaker today, both drop together.</p></div>
-  <div class="card"><b>2. Average the sides</b><p class="small">The fruit is turned a quarter turn between sides. Averaging all sides measures the whole fruit, so it does not matter which side happened to face up.</p></div>
-  <div class="card"><b>3. Change since Day 0</b><p class="small">Change = (today − Day 0) ÷ Day 0 × 100</p></div>
-  <div class="card"><b>4. Wobble</b><p class="small">How much the numbers jump when the fruit is only taken out and put back. Measured once with the Wobble test: (biggest − smallest) ÷ average × 100.</p></div>
-  <div class="card"><b>5. FreshScore = how many wobbles the fruit has moved</b><p class="small">(glow change ÷ glow wobble + look change ÷ look wobble) ÷ 2</p><p class="small">Below 1: <b>Fresh</b> (can't tell it changed) · 1 or more: <b>Use soon</b> · L days after it first reached 1: <b>Past best</b>.</p></div>
+  <div class="card"><b>1. Look at the whole fruit</b><p class="small">The camera looks straight down, so it only sees the top of the fruit. The fruit lies on its side and is <b>rolled a quarter turn</b> between photos, like a wheel or a pencil, so the camera sees all of it: 4 sides. (Spinning it in place would show the same top again.)</p></div>
+  <div class="card"><b>2. Measure brightness</b><p class="small">In each photo the app finds the fruit and takes its <b>gray value</b>: its average brightness, from 0 (black) to 255 (white). It leaves out shiny glare spots and the green top.</p>
+   <p class="small"><b>UV glow</b> = fruit brightness in the UV photo ÷ highlighter brightness<br><b>White-light brightness</b> = fruit brightness in the white photo ÷ gray card brightness</p><p class="small mute">Dividing by a card that never changes makes it fair: if the light is a little weaker today, both get darker together.</p></div>
+  <div class="card"><b>3. Average the 4 sides</b><p class="small">Today's number = the 4 sides added up, divided by 4.</p></div>
+  <div class="card"><b>4. Percent change since Day 0</b><p class="small">(today − Day 0) ÷ Day 0 × 100</p></div>
+  <div class="card"><b>5. Measuring error</b><p class="small">Take the same fruit out and put it back 5 times. The numbers change a little even though the fruit did not. That is the measuring error: (biggest − smallest) ÷ average × 100.</p></div>
+  <div class="card"><b>6. FreshIndex: is the change bigger than the measuring error?</b><p class="small">For UV glow and for white-light brightness: change ÷ measuring error. FreshIndex = the average of the two.</p><p class="small">Below 1: <b>Fresh</b> (the change is smaller than the error, so we can't tell it changed). 1 or more: <b>Use soon</b> (a real change). Then, after the usual number of days (learned from the first batch): <b>Past best</b>.</p></div>
+  <div class="card"><b>7. Two ways, compared</b><p class="small">The app also works out everything using only sides 1 and 3 (half a turn apart), to test whether 4 sides really are better than 2.</p></div>
   <p class="small mute">A freshness screen, not a food-safety test.</p>`;setDock('')}
 
 /* ---------- setup ---------- */
@@ -375,8 +388,8 @@ async function vSetup(){
   if(st===6){
     S.settings.setupDone=true;S.migrated=false;save();
     app.innerHTML=`${stepBar(6,SETUP_N)}<h1>Setup done</h1><p>Your camera, its locked settings, the fruit circle and the four swatches are saved on this phone.</p><div class="card">${['uv','white'].map(k=>S.settings.presets[k]?`<b>${k==='uv'?'UV':'White'}</b>${repHtml(S.settings.presets[k].rep)}`:'').join('')||'<p class="small mute">Photo mode: no camera settings saved.</p>'}</div>
-    <div class="note"><b>Next: the Wobble test.</b> Before the real experiment, measure how much the numbers jump when a fruit is just taken out and put back. That number decides when a change is real.</div><p class="small mute">Run setup again if you change phones or move the phone's tape mark.</p>`;
-    setDock(`<button class="btn alt" id="h">Home</button><button class="btn" id="n">Wobble test</button>`,true);on('h',()=>{stack=[];go('home',{},false)});on('n',()=>{stack=[['home',{}]];go('wobble',{},false)});
+    <div class="note"><b>Next: the put-back test.</b> Before the real experiment, take the same fruit out and put it back 5 times. How much the numbers change when nothing really changed is your <b>measuring error</b>. A change only counts as real if it is bigger than that.</div><p class="small mute">Run setup again if you change phones or move the phone's tape mark.</p>`;
+    setDock(`<button class="btn alt" id="h">Home</button><button class="btn" id="n">Put-back test</button>`,true);on('h',()=>{stack=[];go('home',{},false)});on('n',()=>{stack=[['home',{}]];go('putback',{},false)});
   }
 }
 function repHtml(r){return [['Exposure',r.exposure],['ISO',r.iso],['White balance',r.wb],['Focus',r.focus]].map(([a,b])=>`<div class="chk"><span>${a}</span><span class="${/^Locked/.test(b)?'pass':'na'}">${esc(b)}</span></div>`).join('')}
@@ -394,16 +407,18 @@ function vNew(){
 }
 
 /* ---------- scan: place, then for each side a UV photo and a white photo ---------- */
-const placeText=food=>food==='strawberry'?'Lay it <b>on its side</b> in the circle, <b>tip toward the door</b> (tick 1) and the green top toward the back. Don\'t try to stand it up.':food==='tomato'?'Stand it <b>stem side down</b> in the middle of the circle. Pick a spot you can recognize (a small mark or the widest bulge) and point it at <b>tick 1</b> (one dot, by the door).':'Put it in the middle of the circle.';
-const turnText=(food,t)=>food==='strawberry'?`Roll it a <b>quarter turn</b>, tip still toward the door. If it rolls back, nudge it once; if it still won't stay, leave it where it rests.`:food==='tomato'?`Turn it so the same spot points at <b>tick ${t}</b> (${t} dot${t>1?'s':''}).`:`Turn it to tick ${t}.`;
+const placeText=food=>food==='strawberry'?'Lay it <b>on its side</b> in the middle of the circle, <b>tip pointing at the door mark</b>, green top toward the back. Don\'t try to stand it up.':food==='tomato'?'Lay it <b>on its side</b> in the middle of the circle, <b>stem pointing at the door mark</b>. (The camera sees the sides of the tomato, all the way around.)':'Put it in the middle of the circle.';
+const turnText=(food,k,N)=>{const what=food==='tomato'?'stem':'tip',like=food==='tomato'?'like rolling a wheel':'like rolling a pencil';
+  return N===2?`<b>Roll it half a turn</b>, ${like}, so the side that was on the floor is now on top. ${food==='tomato'?'Stem':'Tip'} still pointing at the door. (Spinning it in place would not help: the camera would see the same top again.)`
+   :`<b>Roll it a quarter turn</b>, ${like}, ${what} still pointing at the door. (Spinning it in place would not help: the camera would see the same top again.) Let it settle; if it rolls back or tips, nudge it once, otherwise leave it where it rests.`};
 function vScan(){
-  const W=ctx.wobble?S.tests.find(t=>t.id===ctx.wobble):null;
+  const W=ctx.putback?S.tests.find(t=>t.id===ctx.putback):null;
   const it=ctx.id?S.items.find(i=>i.id===ctx.id):null,food=W?W.food:it?it.food:ctx.newItem.food,label=W?W.label:it?it.label:ctx.newItem.label;wake();
-  const ticks=TICKS[S.settings.sides]||TICKS[4],N=ticks.length;ctx.sides=ctx.sides||[];ctx.step=ctx.step||0;
-  const sub=W?`Wobble test · round ${W.rounds.length+1}`:it?'Day '+dayDiff(it.day0,ds(today())):'Day 0';
+  const N=W?maxViews(food):viewsFor(food),ticks=Array.from({length:N},(_,i)=>i+1);ctx.sides=ctx.sides||[];ctx.step=ctx.step||0;
+  const sub=W?`Put-back test · round ${W.rounds.length+1}`:it?'Day '+dayDiff(it.day0,ds(today())):'Day 0';
   const head=`${stepBar(Math.min(ctx.step+1,N+1),N+1)}<p class="small mute">${esc(label)} · ${FOODS[food].name} · ${sub}</p>`;
   if(ctx.step===0){
-    app.innerHTML=`${head}<h1>Place the fruit</h1><p>Lights off. Open the door and ${placeText(food)}</p>${W?'<div class="note small">Wobble test: take the fruit all the way out of the box first, then put it back in, as you would on a normal day.</div>':''}<div data-cam></div>`;
+    app.innerHTML=`${head}<h1>Place the fruit</h1><p>Lights off. Open the door and ${placeText(food)}</p>${W?'<div class="note small">Put-back test: take the fruit all the way out of the box first, then put it back in, as you would on a normal day.</div>':''}<div data-cam></div>`;
     mountCam();if(cam.mode!=='photo'&&!cam.track)startCam();
     setDock(`<button class="btn" id="n">Fruit is in, door closed</button>`);on('n',()=>{ctx.step=1;ctx.part=null;vScan()});return;
   }
@@ -411,7 +426,7 @@ function vScan(){
     const si=ctx.step,tick=ticks[si-1],cur=ctx.cur||(ctx.cur={});const first=si%2===1?'uv':'white',second=first==='uv'?'white':'uv';
     const need=!cur[first]?first:!cur[second]?second:null;
     if(need){const isUV=need==='uv';
-      app.innerHTML=`${head}<h1>Side ${si} of ${N}${si>1?' · tick '+tick:''}</h1><p>${isUV?'Flip the switch to <b>UV</b>.':'Flip the switch to <b>WHITE</b>.'} Don't touch the phone or the fruit while it captures.</p>${si===1&&!cur[first]?'<p class="small mute">The app alternates UV-first and white-first so you flip the switch less.</p>':''}<div data-cam></div><div id="res"></div>`;
+      app.innerHTML=`${head}<h1>Side ${si} of ${N}</h1><p class="small mute">${viewName(food,si,N)}</p><p>${isUV?'Flip the switch to <b>UV</b>.':'Flip the switch to <b>WHITE</b>.'} Don't touch the phone or the fruit while it captures.</p>${si===1&&!cur[first]?'<p class="small mute">The app alternates UV-first and white-first so you flip the switch less.</p>':''}<div data-cam></div><div id="res"></div>`;
       mountCam();if(cam.mode==='live')applyPreset((S.settings.presets[need]||{}).p);
       setDock(`<button class="btn" id="cap">${cam.mode==='live'?(isUV?'Capture UV':'Capture white'):(isUV?'Take UV photo':'Take white photo')}</button>`);
       on('cap',async()=>{const b=$('#cap');b.disabled=true;let g;
@@ -426,9 +441,9 @@ function vScan(){
     const sn=sideNumbers(food,cur.uv,cur.white),ok=sn.n>=40;cur.sn=sn;
     app.innerHTML=`${head}<h1>Side ${si} measured</h1><div class="thumbs"><img src="${sn.preview}" alt="Fruit pixels used (bright) and left out (dark)"><img src="${cur.uv.thumb}" alt="UV photo"></div>
      <p class="small mute">Left: only the colored part was measured. Glare, the green top, the rim and the floor are grayed out.</p>
-     <div class="card"><div class="chk"><span>Fruit found</span><span class="${ok?'pass':'fail'}">${ok?sn.n+' points':'Not found'}</span></div><div class="chk"><span>Glow (fruit ÷ highlighter)</span><span class="num">${f2(sn.glow,4)}</span></div><div class="chk"><span>Look (fruit ÷ gray swatch)</span><span class="num">${f2(sn.look,4)}</span></div></div>
-     ${si<N?`<div class="note">${turnText(food,ticks[si])}</div>`:'<div class="note">Last side done. Lights off.</div>'}`;
-    setDock(`<button class="btn alt" id="redo">Redo this side</button><button class="btn" id="n">${si<N?'Turned it · next side':'Finish'}</button>`,true);
+     <div class="card"><div class="chk"><span>Fruit found</span><span class="${ok?'pass':'fail'}">${ok?sn.n+' points':'Not found'}</span></div><div class="chk"><span>UV glow (fruit ÷ highlighter)</span><span class="num">${f2(sn.glow,4)}</span></div><div class="chk"><span>White-light brightness (fruit ÷ gray swatch)</span><span class="num">${f2(sn.look,4)}</span></div></div>
+     ${si<N?`<div class="note">${turnText(food,si+1,N)}</div>`:'<div class="note">Last side done. Lights off.</div>'}`;
+    setDock(`<button class="btn alt" id="redo">Redo this side</button><button class="btn" id="n">${si<N?'Rolled it · next side':'Finish'}</button>`,true);
     on('redo',()=>{ctx.cur={};vScan()});
     on('n',()=>{ctx.sides.push({tick,uv:cur.uv,white:cur.white,sn,checks:[...(cur.uvChecks||[]),...(cur.whiteChecks||[])]});ctx.cur={};ctx.step++;if(ctx.step>N)finishScan(W,it,food);else vScan()});
     return;
@@ -441,17 +456,17 @@ async function finishScan(W,it,food){
   const sec={greenShare:avg(sides.map(s=>{const c=s.sn.uvRGB,t=c[0]+c[1]+c[2]||1;return c[1]/t})),blueDivE:avg(sides.map(s=>s.sn.uvRGB[2]/Math.max(1,s.uv.m.E[1]))),
     rg:avg(sides.map(s=>(s.sn.wRGB[0]/Math.max(1,s.sn.Bw[0]))/(Math.max(1,s.sn.wRGB[1])/Math.max(1,s.sn.Bw[1]))))};
   const allCk=sides.flatMap(s=>s.checks),checks=sides.map((s,i)=>'side'+(i+1)+': '+s.checks.map(([t,o])=>t+' '+(o===null?'n/a':o?'pass':'check')).join('; ')).join(' | ');
-  const sideRows=sides.map(s=>({tick:s.tick,glow:s.sn.glow,look:s.sn.look,fruitUV:s.sn.fruitUV,fruitW:s.sn.fruitW,E:s.sn.E,B:s.sn.B,n:s.sn.n}));
+  const sideRows=sides.map((s,i)=>({tick:s.tick,view:viewName(food,i+1,sides.length),glow:s.sn.glow,look:s.sn.look,fruitUV:s.sn.fruitUV,fruitW:s.sn.fruitW,E:s.sn.E,B:s.sn.B,n:s.sn.n}));
   let item=it,prefix,day;
-  if(W){prefix='Wobble_'+safe(W.label)+'_R'+(W.rounds.length+1);day=0}
+  if(W){prefix='PutBack_'+safe(W.label)+'_R'+(W.rounds.length+1);day=0}
   else{if(!item){item={id:'i'+Date.now(),label:ctx.newItem.label,food,demo:false,day0:date,scans:[]};S.items.push(item)}day=dayDiff(item.day0,date);prefix='Day'+pad(day)+'_'+safe(item.label)}
-  const keep=S.settings.photoMode==='research'||S.settings.keepFull||!!W,taken=new Set((await allPhotos()).map(p=>p.name.replace(/\.\w+$/,''))),names=[],recs=[],ownerId=W?'wob_'+W.id:item.id;
+  const keep=S.settings.photoMode==='research'||S.settings.keepFull||!!W,taken=new Set((await allPhotos()).map(p=>p.name.replace(/\.\w+$/,''))),names=[],recs=[],ownerId=W?'pb_'+W.id:item.id;
   sides.forEach((s,i)=>{for(const [k,kind] of [['uv','UV'],['white','W']]){const g=s[k];let base=prefix+'_S'+(i+1)+'_'+kind,nm=base,j=2;while(taken.has(nm))nm=base+'_'+(j++);taken.add(nm);nm+='.'+extOf(g.blob);names.push(nm);
     const isUV=k==='uv';recs.push({id:ownerId+'|'+nm,itemId:ownerId,label:W?W.label:item.label,food,date,day,side:i+1,kind,name:nm,blob:keep?g.blob:null,size:g.blob.size,thumb:g.thumb,exported:false,
       meta:{time,cameraMode:cam.mode,settings:cam.mode==='live'&&S.settings.presets[k]?S.settings.presets[k].rep:null,fruitGray:isUV?s.sn.fruitUV:s.sn.fruitW,swatchGray:isUV?s.sn.E:s.sn.B,value:isUV?s.sn.glow:s.sn.look,n:s.sn.n,checks:s.checks.map(([t,o])=>t+' '+(o===null?'n/a':o?'pass':'check')).join('; ')}})}});
   const okSave=await putPhotos(recs);
   if(S.settings.photoMode==='research'){try{navigator.storage&&navigator.storage.persist&&navigator.storage.persist()}catch(e){}}
-  if(W){W.rounds.push({date,time,sides:sideRows,glow,look,photos:names});save();stack=[['home',{}]];go('wobble',{id:W.id,justDone:true},false);return}
+  if(W){W.rounds.push({date,time,sides:sideRows,glow,look,photos:names});save();stack=[['home',{}]];go('putback',{id:W.id,justDone:true},false);return}
   item.scans.push({date,day,glow,look,sides:sideRows,sec,time,photos:names,checks});save();
   lastCap={itemId:item.id,sides,names,okSave,keep};
   stack=[['home',{}]];go('result',{id:item.id,checks:allCk},false)}
@@ -463,12 +478,13 @@ function vResult(){
   const allOk=(ctx.checks||[]).every(c=>c[1]!==false);
   app.innerHTML=`<p class="small mute">${esc(it.label)} · ${FOODS[it.food].name} · Day ${l.day}</p>
   <div class="big ${e.status}"><div><b>${e.label.toUpperCase()}</b><span>${e.detail}</span></div></div>
-  ${it.scans.length>1?`<div class="card"><div class="row"><b class="grow">FreshScore</b><span class="num" style="font-size:24px">${l.fs.toFixed(2)}</span></div><div class="meter"><i style="width:${pct}%;background:${col}"></i><s style="left:33.3%"></s></div><div class="row small mute"><span class="grow">0 = no change</span><span>1 = real change</span><span class="grow" style="text-align:right">3</span></div></div>
-  <div class="card"><b>Why: count the wobbles</b>
-   <div class="chk"><span>Glow (UV) change</span><span class="num">${l.dG>=0?'+':''}${l.dG.toFixed(1)}%</span></div><p class="small mute" style="margin:0 0 6px">÷ glow wobble ${e.W.glow}% = ${l.wG.toFixed(2)} wobbles</p>
-   <div class="chk"><span>Look (white) change</span><span class="num">${l.dL>=0?'+':''}${l.dL.toFixed(1)}%</span></div><p class="small mute" style="margin:0 0 6px">÷ look wobble ${e.W.look}% = ${l.wL.toFixed(2)} wobbles</p>
-   <p class="small">FreshScore = (${l.wG.toFixed(2)} + ${l.wL.toFixed(2)}) ÷ 2 = ${l.fs.toFixed(2)}${e.L!=null?`. Days left uses a lead time of ${e.L} days after the first real change.`:'.'}</p></div>`:`<div class="card"><p>Day 0 numbers saved (average of ${l.sides.length||'the'} sides):</p><div class="chk"><span>Glow</span><span class="num">${l.glow.toFixed(4)}</span></div><div class="chk"><span>Look</span><span class="num">${l.look.toFixed(4)}</span></div></div>`}
-  ${l.sides&&l.sides.length?`<div class="card"><b>Each side</b><table><thead><tr><th>Side</th><th>Glow</th><th>Look</th></tr></thead><tbody>${l.sides.map((s,i)=>`<tr><td>${i+1} · tick ${s.tick}</td><td class="num">${s.glow.toFixed(4)}</td><td class="num">${s.look.toFixed(4)}</td></tr>`).join('')}<tr><td><b>Average</b></td><td class="num">${l.glow.toFixed(4)}</td><td class="num">${l.look.toFixed(4)}</td></tr></tbody></table></div>`:''}
+  ${it.scans.length>1?`<div class="card"><div class="row"><b class="grow">FreshIndex</b><span class="num" style="font-size:24px">${l.fs.toFixed(2)}</span></div><div class="meter"><i style="width:${pct}%;background:${col}"></i><s style="left:33.3%"></s></div><div class="row small mute"><span class="grow">0 = no change</span><span>1 = real change</span><span class="grow" style="text-align:right">3</span></div></div>
+  <div class="card"><b>Why: is the change bigger than the measuring error?</b>
+   <div class="chk"><span>UV glow change</span><span class="num">${l.dG>=0?'+':''}${l.dG.toFixed(1)}%</span></div><p class="small mute" style="margin:0 0 6px">÷ UV measuring error ${e.W.glow}% = ${l.wG.toFixed(2)} times bigger</p>
+   <div class="chk"><span>White-light brightness change</span><span class="num">${l.dL>=0?'+':''}${l.dL.toFixed(1)}%</span></div><p class="small mute" style="margin:0 0 6px">÷ white-light measuring error ${e.W.look}% = ${l.wL.toFixed(2)} times bigger</p>
+   <p class="small">FreshIndex = average of the two = (${l.wG.toFixed(2)} + ${l.wL.toFixed(2)}) ÷ 2 = ${l.fs.toFixed(2)}${e.L!=null?`. Days left uses a lead time of ${e.L} days after the first real change.`:'.'}</p></div>
+  ${l.fs2!=null?`<div class="card"><b>Compare the two methods</b><div class="chk"><span>4 sides (quarter turns)</span><span class="num">${l.fs.toFixed(2)}</span></div><div class="chk"><span>2 sides (1 and 3, half a turn apart)</span><span class="num">${l.fs2.toFixed(2)}</span></div><p class="small mute">${e.W2set?'Each uses its own measuring error from the put-back test.':'The 2-side number uses the 4-side measuring error until the put-back test is done.'}</p></div>`:''}`:`<div class="card"><p>Day 0 numbers saved (average of ${l.sides.length||'the'} sides):</p><div class="chk"><span>UV glow</span><span class="num">${l.glow.toFixed(4)}</span></div><div class="chk"><span>White-light brightness</span><span class="num">${l.look.toFixed(4)}</span></div></div>`}
+  ${l.sides&&l.sides.length?`<div class="card"><b>Each side</b><table><thead><tr><th>Side</th><th>UV glow</th><th>White light</th></tr></thead><tbody>${l.sides.map((s,i)=>`<tr><td>${i+1}${s.view?' · '+esc(s.view):''}</td><td class="num">${s.glow.toFixed(4)}</td><td class="num">${s.look.toFixed(4)}</td></tr>`).join('')}<tr><td><b>Average</b></td><td class="num">${l.glow.toFixed(4)}</td><td class="num">${l.look.toFixed(4)}</td></tr></tbody></table></div>`:''}
   ${(()=>{const c=lastCap&&lastCap.itemId===it.id?lastCap:null;if(!c)return'';return `<div class="card"><b>Photos</b><div class="thumbs" style="margin-top:8px">${c.sides.map(s=>`<img src="${s.sn.preview}" alt="Measured fruit area">`).join('')}</div>
    ${!c.okSave?'<p class="small" style="color:var(--bad)">Photos could not be saved in this browser.</p>':S.settings.photoMode==='research'?`<p class="small mute">${c.names.length} photos saved in the app (${esc(c.names[0])} …). Export them from Your data at the end of the day.</p>`:`<p class="small mute">${c.keep?'Full photos are kept in the app.':'Only small previews are kept; open History to save a photo.'}</p>`}</div>`})()}
   <div class="card"><div class="chk"><span>Photo checks</span><span class="${allOk?'pass':'fail'}">${allOk?'All passed':'Some failed'}</span></div></div>
@@ -481,8 +497,8 @@ function vResult(){
 function vItem(){
   const it=S.items.find(i=>i.id===ctx.id);if(!it)return go('home',{},false);const e=evalItem(it);
   app.innerHTML=`<h1>${esc(it.label)} · ${FOODS[it.food].name}${it.demo?'<span class="demo">Example</span>':''}</h1><p class="mute">Day 0 was ${nice(it.day0)} · ${it.scans.length} scan${it.scans.length>1?'s':''} · <span class="st ${e.status}">${e.label}</span></p>
-  <div class="card"><b>FreshScore by day</b><div class="fig" id="fig"><svg role="img" aria-label="FreshScore by day"></svg></div></div>
-  <div class="card"><table><thead><tr><th>Day</th><th>Glow Δ</th><th>Look Δ</th><th>Score</th></tr></thead><tbody>${it.scans.map(s=>`<tr><td>${s.day} · ${nice(s.date)}${s.old?' *':''}</td><td class="num">${s.dG.toFixed(1)}%</td><td class="num">${s.dL.toFixed(1)}%</td><td class="num">${s.fs.toFixed(2)}</td></tr>`).join('')}</tbody></table>${it.scans.some(s=>s.old)?'<p class="small mute">* measured with the old box and method</p>':''}</div>
+  <div class="card"><b>FreshIndex by day</b><div class="fig" id="fig"><svg role="img" aria-label="FreshIndex by day"></svg></div></div>
+  <div class="card"><table><thead><tr><th>Day</th><th>UV change</th><th>White change</th><th>FreshIndex</th><th>2 sides</th></tr></thead><tbody>${it.scans.map(s=>`<tr><td>${s.day} · ${nice(s.date)}${s.old?' *':''}</td><td class="num">${s.dG.toFixed(1)}%</td><td class="num">${s.dL.toFixed(1)}%</td><td class="num">${s.fs.toFixed(2)}</td><td class="num">${s.fs2!=null?s.fs2.toFixed(2):'—'}</td></tr>`).join('')}</tbody></table>${it.scans.some(s=>s.old)?'<p class="small mute">* measured with the old box and method</p>':''}</div>
   ${e.det!=null?`<div class="card"><div class="chk"><span>First real change</span><b>Day ${e.det}</b></div>${e.L!=null?`<div class="chk"><span>Predicted past best</span><b>Day ${e.det+e.L}</b></div>`:''}</div>`:''}
   <div class="card"><b>Photos</b><div id="ph" class="small mute" style="margin-top:6px">Loading…</div></div>
   <button class="btn danger" id="del" style="margin-top:8px">Delete this item</button>`;
@@ -495,7 +511,7 @@ function vItem(){
         (d,close)=>{const s=d.querySelector('#sv');if(s)s.onclick=async()=>{const r=await saveFile(p.blob,p.name);d.querySelector('#svm').textContent=r==='downloaded'?'Saved to Downloads.':r==='shared'?'Shared.':r==='cancelled'?'':'Saving is blocked here; it works in the installed app.'};d.querySelector('#cl').onclick=close})})})();
   const svg=$('#fig svg'),draw=()=>{const W=svg.clientWidth,H=svg.clientHeight;if(!W)return;const p=[34,12,24,10],mx=Math.max(1.6,...it.scans.map(s=>s.fs))*1.1,maxD=Math.max(1,...it.scans.map(s=>s.day));
     const X=d=>p[0]+(W-p[0]-p[1])*d/maxD,Y=v=>H-p[2]-(H-p[2]-p[3])*v/mx;
-    svg.innerHTML=`<line x1="${p[0]}" x2="${W-p[1]}" y1="${Y(0)}" y2="${Y(0)}" stroke="var(--line)"/><line x1="${p[0]}" x2="${W-p[1]}" y1="${Y(1)}" y2="${Y(1)}" stroke="var(--warn)" stroke-dasharray="5 4"/><text x="${p[0]+4}" y="${Y(1)-6}" fill="var(--warn)" font-size="11">1 wobble = real change</text><text x="${p[0]-6}" y="${Y(0)+4}" text-anchor="end" font-size="11" fill="var(--mute)">0</text><text x="${p[0]-6}" y="${Y(1)+4}" text-anchor="end" font-size="11" fill="var(--mute)">1</text>
+    svg.innerHTML=`<line x1="${p[0]}" x2="${W-p[1]}" y1="${Y(0)}" y2="${Y(0)}" stroke="var(--line)"/><line x1="${p[0]}" x2="${W-p[1]}" y1="${Y(1)}" y2="${Y(1)}" stroke="var(--warn)" stroke-dasharray="5 4"/><text x="${p[0]+4}" y="${Y(1)-6}" fill="var(--warn)" font-size="11">1 = as big as the measuring error</text><text x="${p[0]-6}" y="${Y(0)+4}" text-anchor="end" font-size="11" fill="var(--mute)">0</text><text x="${p[0]-6}" y="${Y(1)+4}" text-anchor="end" font-size="11" fill="var(--mute)">1</text>
     <polyline fill="none" stroke="var(--acc2)" stroke-width="2.5" stroke-linejoin="round" points="${it.scans.map(s=>X(s.day)+','+Y(s.fs)).join(' ')}"/>${it.scans.map(s=>`<circle cx="${X(s.day)}" cy="${Y(s.fs)}" r="4.5" fill="${s.fs>=1?'var(--warn)':'var(--acc2)'}"/>`).join('')}
     ${it.scans.filter((s,i,a)=>W>420||i%Math.ceil(a.length/6)===0||i===a.length-1).map(s=>`<text x="${X(s.day)}" y="${H-6}" text-anchor="middle" font-size="11" fill="var(--mute)">D${s.day}</text>`).join('')}`};
   new ResizeObserver(draw).observe(svg);draw();
@@ -503,51 +519,51 @@ function vItem(){
   setDock(`<button class="btn" id="sc">Scan ${esc(it.label)} now</button>`);on('sc',()=>S.settings.setupDone?go('scan',{id:it.id,step:0}):go('setup',{step:1}));
 }
 
-/* ---------- wobble test: same fruit, out and back in, 5 times ---------- */
+/* ---------- put-back test: same fruit, out and back in, 5 times ---------- */
 const range=a=>a.length?(Math.max(...a)-Math.min(...a))/avg(a)*100:null;
-function wobbleOf(t){const R=t.rounds;
-  const res={};const sets={1:[0],2:[0,2],4:[0,1,2,3]};
-  for(const k of [1,2,4]){const idx=sets[k];if(!R.length||R.some(r=>r.sides.length<idx[idx.length-1]+1)){res[k]=null;continue}
+function errorOf(t){const R=t.rounds;
+  const res={};const sets=VIEW_IDX[t.food];
+  for(const k of VIEW_OPTS[t.food]){const idx=sets[k];if(!R.length||R.some(r=>r.sides.length<idx[idx.length-1]+1)){res[k]=null;continue}
     const g=R.map(r=>avg(idx.map(i=>r.sides[i].glow))),l=R.map(r=>avg(idx.map(i=>r.sides[i].look)));res[k]={glow:range(g),look:range(l)}}
   return res}
-function vWobble(){
+function vPutBack(){
   const t=ctx.id?S.tests.find(x=>x.id===ctx.id):null;
   if(!t){
     const food=ctx.food||'tomato';
-    app.innerHTML=`<h1>Wobble test</h1><p class="mute">Measures how much the numbers jump when nothing has really changed: the same fruit is taken all the way out and put back in, 5 times, with a full ${S.settings.sides===4?'4-side':S.settings.sides+'-side'} scan each time. Do it on one day, with a fresh fruit of each kind.</p>
+    app.innerHTML=`<h1>Put-back test</h1><p class="mute">Finds your <b>measuring error</b>: how much the numbers change when nothing has really changed. Take the same fruit all the way out and put it back in, 5 times, with a full 4-side scan each time. Do it on one day, with one fresh fruit of each kind.</p>
     ${S.tests.length?`<h2>Earlier tests</h2>${S.tests.map(x=>`<button class="item" data-t="${x.id}"><span class="av">${esc(x.label.slice(0,3))}</span><span class="grow"><b>${FOODS[x.food].name}</b><br><span class="small mute">${nice(x.date)} · ${x.rounds.length} of 5 rounds</span></span></button>`).join('')}`:''}
     <h2>New test</h2><label class="f">Food</label><div class="seg">${['tomato','strawberry'].map(k=>`<button data-f="${k}" class="${k===food?'on':''}">${FOODS[k].name}</button>`).join('')}</div>
-    <label class="f" for="wl">Label</label><input type="text" id="wl" maxlength="8" value="W${FOODS[food].code}${S.tests.filter(x=>x.food===food).length+1}">
-    ${S.settings.sides!==4?'<div class="note w small">To compare 1, 2 and 4 sides, set "Sides per scan" to 4 in Your data before the test.</div>':''}`;
-    app.querySelectorAll('[data-f]').forEach(b=>b.onclick=()=>{ctx.food=b.dataset.f;vWobble()});
-    app.querySelectorAll('[data-t]').forEach(b=>b.onclick=()=>go('wobble',{id:b.dataset.t}));
+    <label class="f" for="wl">Label</label><input type="text" id="wl" maxlength="8" value="P${FOODS[food].code}${S.tests.filter(x=>x.food===food).length+1}">
+`;
+    app.querySelectorAll('[data-f]').forEach(b=>b.onclick=()=>{ctx.food=b.dataset.f;vPutBack()});
+    app.querySelectorAll('[data-t]').forEach(b=>b.onclick=()=>go('putback',{id:b.dataset.t}));
     setDock(`<button class="btn" id="st">Start round 1</button>`);
-    on('st',()=>{if(!S.settings.setupDone)return go('setup',{step:1});const x={id:'w'+Date.now(),food,label:($('#wl').value||'').trim()||'W1',date:ds(today()),rounds:[]};S.tests.push(x);save();go('scan',{wobble:x.id,step:0})});return}
-  const w=wobbleOf(t),n=t.rounds.length;
-  app.innerHTML=`<h1>Wobble test · ${esc(t.label)}</h1><p class="mute">${FOODS[t.food].name} · ${nice(t.date)} · ${n} of 5 rounds</p>
+    on('st',()=>{if(!S.settings.setupDone)return go('setup',{step:1});const x={id:'w'+Date.now(),food,label:($('#wl').value||'').trim()||'P1',date:ds(today()),rounds:[]};S.tests.push(x);save();go('scan',{putback:x.id,step:0})});return}
+  const w=errorOf(t),n=t.rounds.length;
+  app.innerHTML=`<h1>Put-back test · ${esc(t.label)}</h1><p class="mute">${FOODS[t.food].name} · ${nice(t.date)} · ${n} of 5 rounds</p>
   ${ctx.justDone&&n<5?`<div class="note">Round ${n} saved. Take the fruit <b>all the way out</b>, then start round ${n+1}.</div>`:''}
-  <div class="card"><b>Each round (average of the sides)</b><table><thead><tr><th>Round</th><th>Glow</th><th>Look</th></tr></thead><tbody>${t.rounds.map((r,i)=>`<tr><td>${i+1} · ${r.time}</td><td class="num">${r.glow.toFixed(4)}</td><td class="num">${r.look.toFixed(4)}</td></tr>`).join('')||'<tr><td colspan="3" class="mute">No rounds yet</td></tr>'}</tbody></table></div>
-  ${n>=3?`<div class="card"><b>Wobble = (biggest − smallest) ÷ average × 100</b><table><thead><tr><th>Using</th><th>Glow wobble</th><th>Look wobble</th></tr></thead><tbody>${[1,2,4].map(k=>w[k]?`<tr><td>${k===1?'Side 1 only':k===2?'Sides 1 and 3':'All 4 sides'}</td><td class="num">${w[k].glow.toFixed(1)}%</td><td class="num">${w[k].look.toFixed(1)}%</td></tr>`:'').join('')}</tbody></table>
-   <p class="small mute">Any wobble below 0.5% is counted as 0.5%, so a lucky test can't make the method look better than it is. Smaller is better. If 4 sides wobble least, the 4-side method is proven. If 2 sides are about as small, 2 sides save half the time. Decide before the real experiment and write it down.</p>
+  <div class="card"><b>Each round (average of the sides)</b><table><thead><tr><th>Round</th><th>UV glow</th><th>White light</th></tr></thead><tbody>${t.rounds.map((r,i)=>`<tr><td>${i+1} · ${r.time}</td><td class="num">${r.glow.toFixed(4)}</td><td class="num">${r.look.toFixed(4)}</td></tr>`).join('')||'<tr><td colspan="3" class="mute">No rounds yet</td></tr>'}</tbody></table></div>
+  ${n>=3?`<div class="card"><b>Measuring error = (biggest − smallest) ÷ average × 100</b><table><thead><tr><th>Using</th><th>UV error</th><th>White error</th></tr></thead><tbody>${VIEW_OPTS[t.food].map(k=>w[k]?`<tr><td>${k===1?'Side 1 only':k===2?'2 sides, half a turn apart (1 and 3)':'All 4 sides (quarter turns)'}</td><td class="num">${w[k].glow.toFixed(1)}%</td><td class="num">${w[k].look.toFixed(1)}%</td></tr>`:'').join('')}</tbody></table>
+   <p class="small mute">Smaller is better. Any error below 0.5% is counted as 0.5%, so one lucky test can't make the method look better than it is. If 4 sides give a smaller error than 2, looking at more of the fruit is proven to help. If 2 sides are about as good, they save time. Decide before the real experiment and write it down.</p>
    ${n<5?'<p class="small" style="color:var(--warn)">Finish all 5 rounds before using these numbers.</p>':''}
-   ${n>=5?`<label class="f">Use for ${FOODS[t.food].name}</label><div class="seg">${[1,2,4].filter(k=>w[k]).map(k=>`<button data-use="${k}">${k} side${k>1?'s':''}</button>`).join('')}</div>`:''}</div>`:'<p class="small mute">Wobble numbers appear after 3 rounds; 5 are needed.</p>'}
-  ${S.settings.wobbleSource[t.food]?`<p class="small mute">Now using: ${esc(S.settings.wobbleSource[t.food])}</p>`:''}`;
-  app.querySelectorAll('[data-use]').forEach(b=>b.onclick=()=>{const k=+b.dataset.use,v=w[k];if(n<5)return;S.settings.wobble[t.food]={glow:Math.max(.5,+v.glow.toFixed(1)),look:Math.max(.5,+v.look.toFixed(1))};S.settings.sides=k;S.settings.wobbleSource[t.food]=`${t.label}, ${n} rounds, ${k} side${k>1?'s':''} (${nice(t.date)})`;save();vWobble()});
+   ${n>=5?`<label class="f">Use for ${FOODS[t.food].name}</label><div class="seg">${VIEW_OPTS[t.food].filter(k=>w[k]).map(k=>`<button data-use="${k}">${k} side${k>1?'s':''}</button>`).join('')}</div>`:''}</div>`:'<p class="small mute">Measuring errors appear after 3 rounds; 5 are needed.</p>'}
+  ${S.settings.errSource[t.food]?`<p class="small mute">Now using: ${esc(S.settings.errSource[t.food])}</p>`:''}`;
+  app.querySelectorAll('[data-use]').forEach(b=>b.onclick=()=>{const k=+b.dataset.use,v=w[k];if(n<5)return;S.settings.err[t.food]={glow:Math.max(.5,+v.glow.toFixed(1)),look:Math.max(.5,+v.look.toFixed(1))};S.settings.errBy=S.settings.errBy||{};S.settings.errBy[t.food]={};[1,2,4].forEach(q=>{if(w[q])S.settings.errBy[t.food][q]={glow:+w[q].glow.toFixed(1),look:+w[q].look.toFixed(1)}});S.settings.views[t.food]=k;S.settings.errSource[t.food]=`${t.label}, ${n} rounds, ${k} side${k>1?'s':''} (${nice(t.date)})`;save();vPutBack()});
   setDock(n<5?`<button class="btn" id="nx">Start round ${n+1}</button>`:`<button class="btn" id="hm">Done</button>`);
-  on('nx',()=>go('scan',{wobble:t.id,step:0}));on('hm',()=>{stack=[];go('home',{},false)});
+  on('nx',()=>go('scan',{putback:t.id,step:0}));on('hm',()=>{stack=[];go('home',{},false)});
 }
 
 /* ---------- data ---------- */
-function csv(){const r=[['label','food','example','date','day','sides','glow','look','glow_change_pct','look_change_pct','freshscore','glow_s1','glow_s2','glow_s3','glow_s4','look_s1','look_s2','look_s3','look_s4','sec_tomato_green_share','sec_strawberry_blue_div_highlighter','sec_red_div_green','time','photos','checks']];
+function csv(){const r=[['label','food','example','date','day','sides','uv_glow','white_brightness','uv_glow_change_pct','white_change_pct','freshindex','uv_glow_s1','uv_glow_s2','uv_glow_s3','uv_glow_s4','white_s1','white_s2','white_s3','white_s4','uv_glow_2sides_s1s3','white_2sides_s1s3','freshindex_2sides','sec_tomato_green_share','sec_strawberry_blue_div_highlighter','sec_red_div_green','time','photos','checks']];
   S.items.forEach(it=>{evalItem(it);it.scans.forEach(s=>{const sd=s.sides||[],g=i=>sd[i]?sd[i].glow.toFixed(5):'',l=i=>sd[i]?sd[i].look.toFixed(5):'',sc=s.sec||{};
-    r.push([cell(it.label),it.food,it.demo?1:0,s.date,s.day,sd.length,s.glow.toFixed(5),s.look.toFixed(5),s.dG.toFixed(2),s.dL.toFixed(2),s.fs.toFixed(3),g(0),g(1),g(2),g(3),l(0),l(1),l(2),l(3),sc.greenShare!=null?sc.greenShare.toFixed(5):'',sc.blueDivE!=null?sc.blueDivE.toFixed(5):'',sc.rg!=null?sc.rg.toFixed(5):'',cell(s.time||''),cell((s.photos||[]).join(' ')),cell(s.checks||'')])})});return r.map(x=>x.join(',')).join('\n')}
-function wobbleCsv(){const r=[['test','food','date','round','time','side','tick','glow','look','fruit_gray_uv','fruit_gray_white','highlighter_gray','gray_swatch_gray','fruit_points']];
-  S.tests.forEach(t=>t.rounds.forEach((rd,i)=>rd.sides.forEach((s,j)=>r.push([cell(t.label),t.food,t.date,i+1,rd.time,j+1,s.tick,s.glow.toFixed(5),s.look.toFixed(5),s.fruitUV.toFixed(2),s.fruitW.toFixed(2),s.E.toFixed(2),s.B.toFixed(2),s.n]))));return r.map(x=>x.join(',')).join('\n')}
+    r.push([cell(it.label),it.food,it.demo?1:0,s.date,s.day,sd.length,s.glow.toFixed(5),s.look.toFixed(5),s.dG.toFixed(2),s.dL.toFixed(2),s.fs.toFixed(3),g(0),g(1),g(2),g(3),l(0),l(1),l(2),l(3),sd.length>=3?((sd[0].glow+sd[2].glow)/2).toFixed(5):'',sd.length>=3?((sd[0].look+sd[2].look)/2).toFixed(5):'',s.fs2!=null?s.fs2.toFixed(3):'',sc.greenShare!=null?sc.greenShare.toFixed(5):'',sc.blueDivE!=null?sc.blueDivE.toFixed(5):'',sc.rg!=null?sc.rg.toFixed(5):'',cell(s.time||''),cell((s.photos||[]).join(' ')),cell(s.checks||'')])})});return r.map(x=>x.join(',')).join('\n')}
+function putBackCsv(){const r=[['test','food','date','round','time','side','side_name','uv_glow','white_brightness','fruit_gray_uv','fruit_gray_white','highlighter_gray','gray_swatch_gray','fruit_points']];
+  S.tests.forEach(t=>t.rounds.forEach((rd,i)=>rd.sides.forEach((s,j)=>r.push([cell(t.label),t.food,t.date,i+1,rd.time,j+1,cell(s.view||''),s.glow.toFixed(5),s.look.toFixed(5),s.fruitUV.toFixed(2),s.fruitW.toFixed(2),s.E.toFixed(2),s.B.toFixed(2),s.n]))));return r.map(x=>x.join(',')).join('\n')}
 function dl(text,name){try{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([text],{type:'text/csv'}));a.download=name;document.body.appendChild(a);a.click();a.remove();return true}catch(e){return false}}
 function vData(){
-  const w=S.settings.wobble,L=S.settings.lead,nScans=S.items.reduce((a,i)=>a+i.scans.length,0);
+  const w=S.settings.err,L=S.settings.lead,nScans=S.items.reduce((a,i)=>a+i.scans.length,0);
   app.innerHTML=`<h1>Your data stays on this phone</h1><p class="mute">No account, no sign-in, no server. Nothing leaves the phone unless you export it.</p>
-  <div class="card"><b>What is saved</b><div class="chk"><span>Items</span><span class="num">${S.items.length}</span></div><div class="chk"><span>Scans</span><span class="num">${nScans}</span></div><div class="chk"><span>Wobble tests</span><span class="num">${S.tests.length}</span></div><div class="chk"><span>Photos</span><span>Kept on this phone only</span></div><div class="chk"><span>Name, email, location</span><span>Never collected</span></div></div>
+  <div class="card"><b>What is saved</b><div class="chk"><span>Items</span><span class="num">${S.items.length}</span></div><div class="chk"><span>Scans</span><span class="num">${nScans}</span></div><div class="chk"><span>Put-back tests</span><span class="num">${S.tests.length}</span></div><div class="chk"><span>Photos</span><span>Kept on this phone only</span></div><div class="chk"><span>Name, email, location</span><span>Never collected</span></div></div>
   <h2>Photos</h2>
   <div class="card"><div class="seg" style="grid-template-columns:1fr 1fr"><button data-pm="research" class="${S.settings.photoMode==='research'?'on':''}">Research</button><button data-pm="everyday" class="${S.settings.photoMode==='everyday'?'on':''}">Everyday</button></div>
    <p class="small" style="margin-top:10px">${S.settings.photoMode==='research'?'<b>Research mode:</b> every UV and white photo of every side is kept at full quality with a standard name (Day03_T4_S2_UV.jpg). Export each day and copy the zip to your computer or Google Drive.':'<b>Everyday mode:</b> small previews are kept. Open History to save a full photo.'}</p>
@@ -557,34 +573,34 @@ function vData(){
   <button class="btn alt" id="blind" style="margin-top:8px">Blind scoring pack (side 1 white photos)</button>
   <button class="btn danger" id="delEx" style="margin-top:8px">Free up space: delete exported photos</button>
   <p class="small" id="phMsg"></p>
-  <h2>Numbers</h2><div class="grid2"><button class="btn alt" id="dlc">Download scans CSV</button><button class="btn alt" id="dlw">Download wobble CSV</button></div><button class="btn alt" id="cp" style="margin-top:8px">Copy scans CSV</button><p class="small mute" id="cpMsg"></p>
+  <h2>Numbers</h2><div class="grid2"><button class="btn alt" id="dlc">Download scans CSV</button><button class="btn alt" id="dlw">Download put-back CSV</button></div><button class="btn alt" id="cp" style="margin-top:8px">Copy scans CSV</button><p class="small mute" id="cpMsg"></p>
   <label class="f" for="imp">Restore: paste a FreshLight scans CSV</label><textarea id="imp" placeholder="label,food,example,date,…"></textarea><button class="btn alt" id="im" style="margin-top:8px">Restore from pasted CSV</button>
-  <h2>Method settings</h2><p class="small mute">Wobbles start as placeholders. The Wobble test fills them in. Lead time L comes from the build batch. Freeze these before the blind batch.</p>
-  <div class="card"><label class="f">Sides per scan</label><div class="seg">${[1,2,4].map(k=>`<button data-sd="${k}" class="${S.settings.sides===k?'on':''}">${k}</button>`).join('')}</div></div>
-  ${['tomato','strawberry'].map(f=>`<div class="card"><b>${FOODS[f].name}</b>${S.settings.wobbleSource[f]?`<p class="small mute">From wobble test ${esc(S.settings.wobbleSource[f])}</p>`:'<p class="small mute">Placeholder values</p>'}<div class="grid2"><div><label class="f" for="wg_${f}">Glow wobble %</label><input type="number" step="0.1" id="wg_${f}" value="${w[f].glow}"></div><div><label class="f" for="wl_${f}">Look wobble %</label><input type="number" step="0.1" id="wl_${f}" value="${w[f].look}"></div></div><label class="f" for="ld_${f}">Lead time L, days</label><input type="number" step="1" id="ld_${f}" value="${L[f]}"></div>`).join('')}
+  <h2>Method settings</h2><p class="small mute">Measuring errors start as placeholders. The put-back test fills them in. Days-left (lead time) comes from the build batch. Freeze these before the blind batch.</p>
+  <div class="card"><b>Sides per scan</b><p class="small mute">Set by the put-back test. 4 = rolled a quarter turn each time; 2 = rolled half a turn (the comparison).</p>${['tomato','strawberry'].map(f=>`<label class="f">${FOODS[f].name}</label><div class="seg">${VIEW_OPTS[f].map(k=>`<button data-sd="${f}:${k}" class="${viewsFor(f)===k?'on':''}">${k}</button>`).join('')}</div>`).join('')}</div>
+  ${['tomato','strawberry'].map(f=>`<div class="card"><b>${FOODS[f].name}</b>${S.settings.errSource[f]?`<p class="small mute">From put-back test ${esc(S.settings.errSource[f])}</p>`:'<p class="small mute">Placeholder values</p>'}<div class="grid2"><div><label class="f" for="wg_${f}">UV measuring error %</label><input type="number" step="0.1" id="wg_${f}" value="${w[f].glow}"></div><div><label class="f" for="wl_${f}">White measuring error %</label><input type="number" step="0.1" id="wl_${f}" value="${w[f].look}"></div></div><label class="f" for="ld_${f}">Days left after first real change (lead time)</label><input type="number" step="1" id="ld_${f}" value="${L[f]}"></div>`).join('')}
   <button class="btn" id="sv">Save settings</button>
   <h2>Reset</h2><div class="grid2"><button class="btn alt" id="dm">Reload example items</button><button class="btn danger" id="wipe">Delete all data</button></div>`;
   on('dlc',()=>{$('#cpMsg').textContent=dl(csv(),'freshlight-scans-'+ds(today())+'.csv')?'Download started. If nothing happens here, use Copy.':'Downloads are blocked here. Use Copy.'});
-  on('dlw',()=>{$('#cpMsg').textContent=dl(wobbleCsv(),'freshlight-wobble-'+ds(today())+'.csv')?'Download started.':'Downloads are blocked here.'});
+  on('dlw',()=>{$('#cpMsg').textContent=dl(putBackCsv(),'freshlight-putback-'+ds(today())+'.csv')?'Download started.':'Downloads are blocked here.'});
   on('cp',async()=>{try{await navigator.clipboard.writeText(csv());$('#cpMsg').textContent='Copied. Paste it into a note or Google Sheets.'}catch(e){$('#cpMsg').textContent='Copy was blocked. Select the text in the restore box instead.';$('#imp').value=csv()}});
   on('im',()=>{const t=$('#imp').value.trim().split(/\r?\n/);if(t.length<2){$('#cpMsg').textContent='Paste a CSV first.';return}const items={};
-    t.slice(1).forEach(l=>{const[label,food,ex,date,day,sides,glow,look]=l.split(',');if(!label||!FOODS[food]||isNaN(+glow))return;const k=label+'|'+food;items[k]=items[k]||{id:'r'+Object.keys(items).length+Date.now(),label,food,demo:ex==='1',day0:date,scans:[]};items[k].scans.push({date,day:+day,glow:+glow,look:+look,sides:[]})});
+    t.slice(1).forEach(l=>{const[label,food,ex,date,day,views,glow,look]=l.split(',');if(!label||!FOODS[food]||isNaN(+glow))return;const k=label+'|'+food;items[k]=items[k]||{id:'r'+Object.keys(items).length+Date.now(),label,food,demo:ex==='1',day0:date,scans:[]};items[k].scans.push({date,day:+day,glow:+glow,look:+look,sides:[]})});
     const arr=Object.values(items);if(!arr.length){$('#cpMsg').textContent='No FreshLight rows found.';return}arr.forEach(i=>i.day0=i.scans[0].date);S.items=arr;save();$('#cpMsg').textContent='Restored '+arr.length+' items.'});
   app.querySelectorAll('[data-pm]').forEach(b=>b.onclick=()=>{S.settings.photoMode=b.dataset.pm;save();vData()});
-  app.querySelectorAll('[data-sd]').forEach(b=>b.onclick=()=>{S.settings.sides=+b.dataset.sd;save();vData()});
+  app.querySelectorAll('[data-sd]').forEach(b=>b.onclick=()=>{const[f,k]=b.dataset.sd.split(':');S.settings.views[f]=+k;save();vData()});
   on('kf',()=>{S.settings.keepFull=$('#kf').checked;save()});
   (async()=>{const ph=await allPhotos(),full=ph.filter(p=>p.blob),nw=full.filter(p=>!p.exported);let est='';try{const e=await navigator.storage.estimate();est=' · app storage '+fmtMB(e.usage||0)+' of '+fmtMB(e.quota||0)}catch(e){}
     const el=$('#phStats');if(el)el.textContent=ph.length+' photos ('+full.length+' full, '+(ph.length-full.length)+' previews) · '+nw.length+' not exported yet'+est})();
   on('exT',async()=>{const t=ds(today());exportZip((await allPhotos()).filter(p=>p.blob&&p.date===t),'FreshLight_'+t+'.zip',$('#phMsg'))});
   on('exN',async()=>{exportZip((await allPhotos()).filter(p=>p.blob&&!p.exported),'FreshLight_new_'+ds(today())+'.zip',$('#phMsg'))});
-  on('blind',()=>sheet(`<h2>Blind scoring pack</h2><p class="mute">The side 1 white-light photo of each fruit-day is shuffled and renamed with a random code, with a scoring sheet and the 0–4 rubric. The answer key is a separate file. Wobble-test photos are left out.</p><button class="btn" id="bT">Today's photos</button><button class="btn alt" id="bA" style="margin-top:8px">All photos</button><button class="btn alt" id="cl" style="margin-top:8px">Cancel</button>`,(d,close)=>{
-    const run=async all=>{close();const t=ds(today());blindPack((await allPhotos()).filter(p=>p.blob&&p.kind==='W'&&(p.side||1)===1&&!/^wob_/.test(p.itemId)&&(all||p.date===t)),$('#phMsg'))};
+  on('blind',()=>sheet(`<h2>Blind scoring pack</h2><p class="mute">The side 1 white-light photo of each fruit-day is shuffled and renamed with a random code, with a scoring sheet and the 0–4 rubric. The answer key is a separate file. Put-back test photos are left out.</p><button class="btn" id="bT">Today's photos</button><button class="btn alt" id="bA" style="margin-top:8px">All photos</button><button class="btn alt" id="cl" style="margin-top:8px">Cancel</button>`,(d,close)=>{
+    const run=async all=>{close();const t=ds(today());blindPack((await allPhotos()).filter(p=>p.blob&&p.kind==='W'&&(p.side||1)===1&&S.items.some(i=>i.id===p.itemId)&&(all||p.date===t)),$('#phMsg'))};
     d.querySelector('#bT').onclick=()=>run(false);d.querySelector('#bA').onclick=()=>run(true);d.querySelector('#cl').onclick=close}));
   on('delEx',()=>sheet(`<h2>Delete exported photos?</h2><p class="mute">Full photos you have already exported are removed from the app. Previews and all numbers stay. Only do this after the zip is safely on your computer or Google Drive.</p><div class="grid2"><button class="btn alt" id="no">Cancel</button><button class="btn danger" id="yes">Delete</button></div>`,(d,close)=>{d.querySelector('#no').onclick=close;
     d.querySelector('#yes').onclick=async()=>{const ex=(await allPhotos()).filter(p=>p.blob&&p.exported);await putPhotos(ex.map(p=>Object.assign(p,{blob:null})));close();vData();$('#phMsg').textContent=ex.length+' full photos removed; previews kept.'}}));
   on('sv',()=>{['tomato','strawberry'].forEach(f=>{const g=id=>+$('#'+id).value;if(g('wg_'+f)>0)w[f].glow=g('wg_'+f);if(g('wl_'+f)>0)w[f].look=g('wl_'+f);if(g('ld_'+f)>=0)L[f]=g('ld_'+f)});save();$('#sv').textContent='Saved'});
   on('dm',()=>{S.items=S.items.filter(i=>!i.demo).concat(demoItems());save();$('#dm').textContent='Example items loaded'});
-  on('wipe',()=>sheet(`<h2>Delete everything?</h2><p class="mute">All items, scans, wobble tests, photos, setup and settings will be removed from this phone. Export first if you need them.</p><div class="grid2"><button class="btn alt" id="no">Cancel</button><button class="btn danger" id="yes">Delete all</button></div>`,(d,close)=>{d.querySelector('#no').onclick=close;d.querySelector('#yes').onclick=async()=>{await clearPhotos();S=fresh();S.items=[];save();close();stack=[];go('home',{},false)}}));
+  on('wipe',()=>sheet(`<h2>Delete everything?</h2><p class="mute">All items, scans, put-back tests, photos, setup and settings will be removed from this phone. Export first if you need them.</p><div class="grid2"><button class="btn alt" id="no">Cancel</button><button class="btn danger" id="yes">Delete all</button></div>`,(d,close)=>{d.querySelector('#no').onclick=close;d.querySelector('#yes').onclick=async()=>{await clearPhotos();S=fresh();S.items=[];save();close();stack=[];go('home',{},false)}}));
   setDock('');
 }
 
